@@ -57,15 +57,13 @@ public class DynamicDbService {
         String cliKey = data.keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst().orElse(null);
         if (cliKey != null) {
             Object cliValue = data.get(cliKey);
-            if (cliValue instanceof String) {
-                cliValue = ((String) cliValue).trim();
-                data.put(cliKey, cliValue);
-            }
             if (cliValue != null) {
-                String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE " + cliKey + " = ?";
-                Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliValue);
+                String cliStr = cliValue.toString().trim();
+                data.put(cliKey, cliStr);
+                String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE TRIM(" + cliKey + ") = ?";
+                Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliStr);
                 if (count != null && count > 0) {
-                    throw new RuntimeException("Le CLI '" + cliValue + "' existe déjà dans la base de données.");
+                    throw new RuntimeException("Le CLI '" + cliStr + "' existe déjà dans la base de données.");
                 }
             }
         }
@@ -152,51 +150,46 @@ public class DynamicDbService {
 
         String cliKey = dataArray.get(0).keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst()
                 .orElse(null);
-        List<Map<String, Object>> rowsToInsert = new ArrayList<>();
-        List<String> skippedClis = new ArrayList<>();
 
-        for (Map<String, Object> row : dataArray) {
-            if (cliKey != null) {
+        if (cliKey != null) {
+            Set<String> internalClis = new HashSet<>();
+            List<String> duplicates = new ArrayList<>();
+            for (Map<String, Object> row : dataArray) {
                 Object cliValue = row.get(cliKey);
                 if (cliValue != null) {
-                    String cliStr = cliValue.toString();
-                    // Check internal duplicates in rowsToInsert
-                    boolean internalDuplicate = rowsToInsert.stream()
-                            .anyMatch(r -> cliStr.equals(String.valueOf(r.get(cliKey))));
-
-                    if (internalDuplicate) {
-                        skippedClis.add(cliStr + " (Doublon fichier)");
-                        continue;
+                    String cliStr = cliValue.toString().trim();
+                    row.put(cliKey, cliStr);
+                    if (internalClis.contains(cliStr)) {
+                        duplicates.add(cliStr + " (Doublon dans le fichier)");
                     }
+                    internalClis.add(cliStr);
 
-                    // Check DB duplicates
-                    String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE " + cliKey + " = ?";
-                    Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliValue);
+                    String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE TRIM(" + cliKey
+                            + ") = ?";
+                    Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliStr);
                     if (count != null && count > 0) {
-                        skippedClis.add(cliStr + " (Existe déjà)");
-                        continue;
+                        duplicates.add(cliStr + " (Existe déjà en base)");
                     }
                 }
             }
-            rowsToInsert.add(row);
-        }
-
-        if (!rowsToInsert.isEmpty()) {
-            String cols = String.join(", ", rowsToInsert.get(0).keySet());
-            String placeholders = rowsToInsert.get(0).keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
-            String sql = "INSERT INTO " + tableName.toUpperCase() + " (" + cols + ") VALUES (" + placeholders + ")";
-
-            List<Object[]> batchArgs = new ArrayList<>();
-            for (Map<String, Object> data : rowsToInsert) {
-                batchArgs.add(data.values().toArray());
-                auditService.logAction(tableName, "INSERT_BULK", null, data, user);
+            if (!duplicates.isEmpty()) {
+                throw new RuntimeException("Doublons détectés : " + String.join(", ", duplicates));
             }
-            jdbcTemplate.batchUpdate(sql, batchArgs);
         }
+
+        String cols = String.join(", ", dataArray.get(0).keySet());
+        String placeholders = dataArray.get(0).keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
+        String sql = "INSERT INTO " + tableName.toUpperCase() + " (" + cols + ") VALUES (" + placeholders + ")";
+
+        List<Object[]> batchArgs = new ArrayList<>();
+        for (Map<String, Object> data : dataArray) {
+            batchArgs.add(data.values().toArray());
+            auditService.logAction(tableName, "INSERT_BULK", null, data, user);
+        }
+        jdbcTemplate.batchUpdate(sql, batchArgs);
 
         Map<String, Object> result = new HashMap<>();
-        result.put("insertedCount", rowsToInsert.size());
-        result.put("skippedClis", skippedClis);
+        result.put("insertedCount", dataArray.size());
         result.put("total", dataArray.size());
         return result;
     }

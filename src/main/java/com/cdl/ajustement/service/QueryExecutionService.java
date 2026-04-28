@@ -79,7 +79,13 @@ public class QueryExecutionService {
                 queryToExecute = queryToExecute.replaceAll("(?i)" + java.util.regex.Pattern.quote(runIdMarker),
                         runIdValue);
 
-                jdbcTemplate.execute(queryToExecute);
+                String[] statements = queryToExecute.split(";");
+                for (String stmt : statements) {
+                    String s = stmt.trim();
+                    if (!s.isEmpty()) {
+                        jdbcTemplate.execute(s);
+                    }
+                }
 
                 executionLog.setStatus("SUCCESS");
                 logRepository.save(executionLog);
