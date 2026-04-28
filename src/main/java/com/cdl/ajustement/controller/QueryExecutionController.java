@@ -76,6 +76,18 @@ public class QueryExecutionController {
         return ResponseEntity.ok(Collections.singletonMap("status", "Execution cancelled"));
     }
 
+    @PostMapping("/cancel-secure/{configName}")
+    public ResponseEntity<Map<String, String>> cancelQuerySecure(@PathVariable String configName,
+            @RequestBody Map<String, String> body) {
+        String password = body.get("password");
+        if (!"ADMINCDL".equals(password)) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(Collections.singletonMap("error", "Mot de passe invalide"));
+        }
+        executionService.cancelExecution(configName);
+        return ResponseEntity.ok(Collections.singletonMap("status", "Execution cancelled"));
+    }
+
     @GetMapping("/progress")
     public ResponseEntity<Map<String, Object>> getProgress(
             @RequestParam(defaultValue = "default_process") String configName) {

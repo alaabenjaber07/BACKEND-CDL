@@ -67,8 +67,8 @@ public class DynamicCrudController {
     }
 
     @PostMapping("/{tableName}/bulk")
-    public ResponseEntity<Void> insertBulk(@PathVariable String tableName, @RequestBody List<Map<String, Object>> dataArray) {
-        dynamicDbService.insertBulk(tableName, dataArray, getCurrentUser());
-        return ResponseEntity.ok().build();
+    public ResponseEntity<Map<String, Object>> insertBulk(@PathVariable String tableName,
+            @RequestBody List<Map<String, Object>> dataArray) {
+        return ResponseEntity.ok(dynamicDbService.insertBulk(tableName, dataArray, getCurrentUser()));
     }
 }

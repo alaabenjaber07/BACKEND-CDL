@@ -27,9 +27,9 @@ public class DataInitializer {
             // Table existe déjà
         }
         
-        String[] defaultTables = {"CDL_AJUSTEMENT", "CDL_FNE", "CDL_FNG", "CDL_DEPOT","ajust_eps_contre_gar","ajust_cde",
-                "cdl_nantissement","cdl_depot", "ajust_ctx","ajust_prosol","cdl_ajust_god","cdl_gar_bque","cdl_god","cdl_gar_etat",
-                "cdl_sotugar","imp_taksit","cdl_gar_hyp"};
+        String[] defaultTables = {"CDL_AJUSTEMENT", "CDL_FNE", "CDL_FNG","ajust_eps_contre_gar","ajust_cde",
+                "cdl_nantissement","CDL_DEPOT", "ajust_ctx","ajust_prosol","cdl_gar_bque","cdl_gar_etat",
+                "cdl_sotugar","cdl_gar_hyp"};
         for (String tbl : defaultTables) {
             try {
                 jdbcTemplate.update("INSERT INTO CDL_MANAGED_TABLES (TABLE_NAME) VALUES (?)", tbl);

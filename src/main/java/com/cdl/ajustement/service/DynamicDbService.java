@@ -29,12 +29,14 @@ public class DynamicDbService {
         String query = "SELECT c.COLUMN_NAME, c.DATA_TYPE, " +
                 "CASE WHEN p.COLUMN_NAME IS NOT NULL THEN 'TRUE' ELSE 'FALSE' END as IS_PK " +
                 "FROM USER_TAB_COLUMNS c " +
-                "LEFT JOIN (SELECT cols.column_name, cons.table_name FROM all_constraints cons, all_cons_columns cols " +
-                "WHERE cons.constraint_type = 'P' AND cons.constraint_name = cols.constraint_name AND cons.owner = cols.owner) p " +
+                "LEFT JOIN (SELECT cols.column_name, cons.table_name FROM all_constraints cons, all_cons_columns cols "
+                +
+                "WHERE cons.constraint_type = 'P' AND cons.constraint_name = cols.constraint_name AND cons.owner = cols.owner) p "
+                +
                 "ON c.TABLE_NAME = p.TABLE_NAME AND c.COLUMN_NAME = p.COLUMN_NAME " +
                 "WHERE c.TABLE_NAME = ? ORDER BY c.COLUMN_ID";
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(query, tableName.toUpperCase());
-        
+
         List<ColumnDefinition> columns = new ArrayList<>();
         for (Map<String, Object> row : rows) {
             ColumnDefinition col = new ColumnDefinition();
@@ -52,10 +54,26 @@ public class DynamicDbService {
 
     @Transactional
     public void insertRow(String tableName, Map<String, Object> data, String user) {
+        String cliKey = data.keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst().orElse(null);
+        if (cliKey != null) {
+            Object cliValue = data.get(cliKey);
+            if (cliValue instanceof String) {
+                cliValue = ((String) cliValue).trim();
+                data.put(cliKey, cliValue);
+            }
+            if (cliValue != null) {
+                String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE " + cliKey + " = ?";
+                Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliValue);
+                if (count != null && count > 0) {
+                    throw new RuntimeException("Le CLI '" + cliValue + "' existe déjà dans la base de données.");
+                }
+            }
+        }
+
         String cols = String.join(", ", data.keySet());
         String placeholders = data.keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
         String sql = "INSERT INTO " + tableName.toUpperCase() + " (" + cols + ") VALUES (" + placeholders + ")";
-        
+
         jdbcTemplate.update(sql, data.values().toArray());
         auditService.logAction(tableName, "INSERT", null, data, user);
     }
@@ -67,12 +85,38 @@ public class DynamicDbService {
         Map<String, Object> oldData = jdbcTemplate.queryForList(selectSql, pkValues.values().toArray())
                 .stream().findFirst().orElse(new HashMap<>());
 
+        // Duplicate CLI check for updates
+        String cliKey = newData.keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst().orElse(null);
+        if (cliKey != null) {
+            Object newCliValue = newData.get(cliKey);
+            if (newCliValue instanceof String) {
+                newCliValue = ((String) newCliValue).trim();
+                newData.put(cliKey, newCliValue);
+            }
+            // Search for the CLI key in oldData regardless of case
+            String oldCliKey = oldData.keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst()
+                    .orElse(null);
+            Object oldCliValue = (oldCliKey != null) ? oldData.get(oldCliKey) : null;
+            if (oldCliValue instanceof String) {
+                oldCliValue = ((String) oldCliValue).trim();
+            }
+
+            if (newCliValue != null && !newCliValue.equals(oldCliValue)) {
+                String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE " + cliKey + " = ?";
+                Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, newCliValue);
+                if (count != null && count > 0) {
+                    throw new RuntimeException(
+                            "Le CLI '" + newCliValue + "' existe déjà dans un autre enregistrement.");
+                }
+            }
+        }
+
         String setClause = newData.keySet().stream().map(k -> k + " = ?").collect(Collectors.joining(", "));
         String sql = "UPDATE " + tableName.toUpperCase() + " SET " + setClause + " WHERE " + whereClause;
-        
+
         List<Object> args = new ArrayList<>(newData.values());
         args.addAll(pkValues.values());
-        
+
         jdbcTemplate.update(sql, args.toArray());
         auditService.logAction(tableName, "UPDATE", oldData, newData, user);
     }
@@ -89,6 +133,7 @@ public class DynamicDbService {
         auditService.logAction(tableName, "DELETE", oldData, null, user);
 
     }
+
     @Transactional
     public void deleteAll(String tableName, String user) {
         List<Map<String, Object>> oldData = jdbcTemplate.queryForList("SELECT * FROM " + tableName.toUpperCase());
@@ -98,20 +143,61 @@ public class DynamicDbService {
         }
 
     }
+
     @Transactional
-    public void insertBulk(String tableName, List<Map<String, Object>> dataArray, String user) {
-        if(dataArray == null || dataArray.isEmpty()) return;
-        
-        String cols = String.join(", ", dataArray.get(0).keySet());
-        String placeholders = dataArray.get(0).keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
-        String sql = "INSERT INTO " + tableName.toUpperCase() + " (" + cols + ") VALUES (" + placeholders + ")";
-        
-        List<Object[]> batchArgs = new ArrayList<>();
-        for (Map<String, Object> data : dataArray) {
-            batchArgs.add(data.values().toArray());
-            auditService.logAction(tableName, "INSERT_BULK", null, data, user);
+    public Map<String, Object> insertBulk(String tableName, List<Map<String, Object>> dataArray, String user) {
+        if (dataArray == null || dataArray.isEmpty()) {
+            return Collections.emptyMap();
         }
-        
-        jdbcTemplate.batchUpdate(sql, batchArgs);
+
+        String cliKey = dataArray.get(0).keySet().stream().filter(k -> k.equalsIgnoreCase("CLI")).findFirst()
+                .orElse(null);
+        List<Map<String, Object>> rowsToInsert = new ArrayList<>();
+        List<String> skippedClis = new ArrayList<>();
+
+        for (Map<String, Object> row : dataArray) {
+            if (cliKey != null) {
+                Object cliValue = row.get(cliKey);
+                if (cliValue != null) {
+                    String cliStr = cliValue.toString();
+                    // Check internal duplicates in rowsToInsert
+                    boolean internalDuplicate = rowsToInsert.stream()
+                            .anyMatch(r -> cliStr.equals(String.valueOf(r.get(cliKey))));
+
+                    if (internalDuplicate) {
+                        skippedClis.add(cliStr + " (Doublon fichier)");
+                        continue;
+                    }
+
+                    // Check DB duplicates
+                    String checkSql = "SELECT COUNT(*) FROM " + tableName.toUpperCase() + " WHERE " + cliKey + " = ?";
+                    Integer count = jdbcTemplate.queryForObject(checkSql, Integer.class, cliValue);
+                    if (count != null && count > 0) {
+                        skippedClis.add(cliStr + " (Existe déjà)");
+                        continue;
+                    }
+                }
+            }
+            rowsToInsert.add(row);
+        }
+
+        if (!rowsToInsert.isEmpty()) {
+            String cols = String.join(", ", rowsToInsert.get(0).keySet());
+            String placeholders = rowsToInsert.get(0).keySet().stream().map(k -> "?").collect(Collectors.joining(", "));
+            String sql = "INSERT INTO " + tableName.toUpperCase() + " (" + cols + ") VALUES (" + placeholders + ")";
+
+            List<Object[]> batchArgs = new ArrayList<>();
+            for (Map<String, Object> data : rowsToInsert) {
+                batchArgs.add(data.values().toArray());
+                auditService.logAction(tableName, "INSERT_BULK", null, data, user);
+            }
+            jdbcTemplate.batchUpdate(sql, batchArgs);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("insertedCount", rowsToInsert.size());
+        result.put("skippedClis", skippedClis);
+        result.put("total", dataArray.size());
+        return result;
     }
 }
