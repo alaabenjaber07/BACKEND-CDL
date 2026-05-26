@@ -27,5 +27,5 @@ public class AppUser {
     private String nom;
     private String prenom;
     private String email;
-    private String matricule; // 4 chiffres
+    private String matricule;
 }

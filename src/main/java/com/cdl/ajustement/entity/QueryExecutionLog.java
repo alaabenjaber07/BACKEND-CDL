@@ -27,4 +27,15 @@ public class QueryExecutionLog {
 
     @Column(name = "STATUS")
     private String status;
+
+    @Column(name = "MESSAGE")
+    private String message;
+
+    public String getMessage() {
+        return message;
+    }
+
+    public void setMessage(String message) {
+        this.message = message;
+    }
 }

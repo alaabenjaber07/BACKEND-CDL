@@ -67,10 +67,11 @@ public class QueryExecutionService {
         CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
             try {
                 ensureConfigSchemaUpToDate();
+                ensureExecutionSchemaUpToDate();
                 ensureSuiviTraceExists();
                 String query = config.getExecutionQuery();
                 // Improved SQL cleaning: remove all variants of comments
-                String queryToExecute = query.replaceAll("(?m)^\\s*--.*$", "")
+                String queryToExecute = query.replaceAll("(?m)--.*$", "")
                         .replaceAll("(?s)/\\*.*?\\*/", "")
                         .trim();
 
@@ -79,13 +80,23 @@ public class QueryExecutionService {
                 queryToExecute = queryToExecute.replaceAll("(?i)" + java.util.regex.Pattern.quote(runIdMarker),
                         runIdValue);
 
-                String[] statements = queryToExecute.split(";");
-                for (String stmt : statements) {
-                    String s = stmt.trim();
-                    if (!s.isEmpty()) {
-                        jdbcTemplate.execute(s);
+                java.util.List<String> statements = splitSqlStatements(queryToExecute);
+                java.util.List<String> validStatements = new java.util.ArrayList<>();
+                for (String s : statements) {
+                    if (s != null && !s.trim().isEmpty()) {
+                        validStatements.add(s.trim());
                     }
                 }
+
+                int totalSteps = validStatements.size();
+                jdbcTemplate.execute((java.sql.Connection conn) -> {
+                    for (int i = 0; i < totalSteps; i++) {
+                        String s = validStatements.get(i);
+                        String msgPrefix = totalSteps > 1 ? "Étape " + (i + 1) + "/" + totalSteps + " : " : "";
+                        executeStatementWithRetry(conn, s, executionLog.getId(), false, msgPrefix);
+                    }
+                    return null;
+                });
 
                 executionLog.setStatus("SUCCESS");
                 logRepository.save(executionLog);
@@ -130,13 +141,14 @@ public class QueryExecutionService {
         try {
             ensureSuiviTraceExists();
             String runId = activeRuns.get(configName);
-            if (runId == null) {
-                List<QueryExecutionLog> logs = logRepository.findAllByOrderByExecutionDateDesc();
-                QueryExecutionLog latest = logs.stream()
-                        .filter(l -> l.getConfigName().equals(configName))
-                        .findFirst()
-                        .orElse(null);
 
+            List<QueryExecutionLog> logs = logRepository.findAllByOrderByExecutionDateDesc();
+            QueryExecutionLog latest = logs.stream()
+                    .filter(l -> l.getConfigName().equals(configName))
+                    .findFirst()
+                    .orElse(null);
+
+            if (runId == null) {
                 if (latest != null && "STARTED".equals(latest.getStatus())) {
                     runId = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
                             .format(latest.getExecutionDate());
@@ -146,6 +158,7 @@ public class QueryExecutionService {
                         res.put("count", TOTAL_ROWS);
                         res.put("total", TOTAL_ROWS);
                         res.put("progress", 100.0);
+                        res.put("isExecuting", false);
                         res.put("message", "Terminé avec succès (100%)");
                         res.put("status", "SUCCESS");
                         return res;
@@ -154,6 +167,7 @@ public class QueryExecutionService {
                     idle.put("count", 0);
                     idle.put("total", TOTAL_ROWS);
                     idle.put("progress", 0.0);
+                    idle.put("isExecuting", false);
                     idle.put("message", "Prêt...");
                     idle.put("status", latest != null ? latest.getStatus() : "IDLE");
                     return idle;
@@ -186,12 +200,17 @@ public class QueryExecutionService {
             } catch (Exception e) {
             }
 
+            String currentStep = (latest != null && latest.getMessage() != null) ? latest.getMessage()
+                    : "Préparation des données...";
+
             double percent = Math.min(100.0, Math.round(countNum * 100.0 / TOTAL_ROWS * 100.0) / 100.0);
             Map<String, Object> response = new java.util.HashMap<>();
             response.put("count", countNum);
             response.put("total", TOTAL_ROWS);
             response.put("progress", percent);
+            response.put("isExecuting", true);
             response.put("message", msg);
+            response.put("currentStep", currentStep);
             response.put("runId", runId);
             return response;
         } catch (Exception e) {
@@ -200,6 +219,7 @@ public class QueryExecutionService {
             error.put("total", TOTAL_ROWS);
             error.put("progress", 0.0);
             error.put("message", "Erreur suivi: " + e.getMessage());
+            error.put("currentStep", "Erreur");
             return error;
         }
     }
@@ -240,15 +260,8 @@ public class QueryExecutionService {
                 QueryExtractionLog currentLog = extractionLogRepository.findById(logId)
                         .orElseThrow(() -> new RuntimeException("Log non trouvé"));
 
-                String finalSelect = getFinalSelect(configName, queryIndex);
-
-                try {
-                    String countQuery = "SELECT COUNT(*) FROM (" + finalSelect + ")";
-                    Long total = jdbcTemplate.queryForObject(countQuery, Long.class);
-                    currentLog.setTotalRows(total);
-                    extractionLogRepository.save(currentLog);
-                } catch (Exception e) {
-                }
+                ensureExtractionSchemaUpToDate();
+                String finalSelect = getFinalSelect(configName, queryIndex, logId);
 
                 java.io.File tempFile = java.io.File.createTempFile("cdl_ext_" + configName + "_" + queryIndex + "_",
                         ".csv");
@@ -295,7 +308,7 @@ public class QueryExecutionService {
                 });
     }
 
-    private String getFinalSelect(String configName, int queryIndex) {
+    private String getFinalSelect(String configName, int queryIndex, Long logId) {
         QueryConfig config = configRepository.findByConfigName(configName)
                 .orElseThrow(() -> new RuntimeException("Configuration not found: " + configName));
         String query = (queryIndex == 2) ? config.getExtractionQuery2() : config.getExtractionQuery();
@@ -317,7 +330,17 @@ public class QueryExecutionService {
                 finalSelect = s;
                 break;
             } else {
-                jdbcTemplate.execute(s);
+                executeWithRetryOnLock(s, logId, true);
+            }
+        }
+        String logStr = (finalSelect != null) ? finalSelect : query;
+        System.out.println("[DB] Lancement Extraction CSV via : "
+                + (logStr.length() > 200 ? logStr.substring(0, 200) + "..." : logStr));
+        if (logId != null) {
+            try {
+                jdbcTemplate.update("UPDATE CDL_QUERY_EXTRACTION_LOG SET MESSAGE = ? WHERE ID = ?",
+                        "Extraction des résultats CSV...", logId);
+            } catch (Exception e) {
             }
         }
         return (finalSelect != null) ? finalSelect : query;
@@ -352,21 +375,15 @@ public class QueryExecutionService {
                     }
                     writer.println();
                     count++;
-                    if (logId != null && count % 2000 == 0) {
-                        final long currentCount = count;
-                        extractionLogRepository.findById(logId).ifPresent(l -> {
-                            l.setProcessedRows(currentCount);
-                            extractionLogRepository.save(l);
-                        });
+                    if (logId != null && count % 100 == 0) {
+                        jdbcTemplate.update("UPDATE CDL_QUERY_EXTRACTION_LOG SET PROCESSED_ROWS = ? WHERE ID = ?",
+                                count, logId);
                         writer.flush();
                     }
                 }
                 if (logId != null) {
-                    final long finalCount = count;
-                    extractionLogRepository.findById(logId).ifPresent(l -> {
-                        l.setProcessedRows(finalCount);
-                        extractionLogRepository.save(l);
-                    });
+                    jdbcTemplate.update("UPDATE CDL_QUERY_EXTRACTION_LOG SET PROCESSED_ROWS = ? WHERE ID = ?", count,
+                            logId);
                 }
                 return null;
             });
@@ -408,7 +425,143 @@ public class QueryExecutionService {
         }
     }
 
+    private java.util.List<String> splitSqlStatements(String script) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+        if (script == null || script.trim().isEmpty())
+            return result;
+
+        String[] parts = script.split(";");
+        StringBuilder current = new StringBuilder();
+        int depth = 0;
+
+        for (String part : parts) {
+            current.append(part).append(";");
+            String upper = " " + part.toUpperCase() + " ";
+
+            // Count block start/end keywords
+            depth += countMatch(upper, "\\bBEGIN\\b");
+            depth += countMatch(upper, "\\bDECLARE\\b");
+            depth += countMatch(upper, "\\bIF\\b");
+            depth += countMatch(upper, "\\bLOOP\\b");
+            depth += countMatch(upper, "\\bCASE\\b");
+            depth -= countMatch(upper, "\\bEND\\b");
+
+            if (depth <= 0) {
+                String stmt = current.toString().trim();
+                // Remove trailing ; if it's there
+                if (stmt.endsWith(";")) {
+                    // JDBC for Oracle blocks normally expects the final ; to be present but the
+                    // driver handles it.
+                    // However, for multiple statements, we pass the block with its ;.
+                }
+                result.add(stmt);
+                current.setLength(0);
+                depth = 0;
+            }
+        }
+
+        String remaining = current.toString().trim();
+        if (!remaining.isEmpty()) {
+            result.add(remaining);
+        }
+
+        return result;
+    }
+
+    private int countMatch(String text, String regex) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(regex).matcher(text);
+        int count = 0;
+        while (m.find())
+            count++;
+        return count;
+    }
+
+    private void ensureExtractionSchemaUpToDate() {
+        try {
+            jdbcTemplate.execute("ALTER TABLE CDL_QUERY_EXTRACTION_LOG ADD MESSAGE VARCHAR2(2000)");
+        } catch (Exception e) {
+            try {
+                jdbcTemplate.execute("ALTER TABLE CDL_QUERY_EXTRACTION_LOG MODIFY MESSAGE VARCHAR2(2000)");
+            } catch (Exception ex) {
+            }
+        }
+    }
+
+    private void ensureExecutionSchemaUpToDate() {
+        try {
+            jdbcTemplate.execute("ALTER TABLE CDL_QUERY_EXECUTION_LOG ADD MESSAGE VARCHAR2(2000)");
+        } catch (Exception e) {
+            try {
+                jdbcTemplate.execute("ALTER TABLE CDL_QUERY_EXECUTION_LOG MODIFY MESSAGE VARCHAR2(2000)");
+            } catch (Exception ex) {
+            }
+        }
+    }
+
     public void updateDefaultConfig() {
         System.out.println("Opération ignorée : La requête est configurée via l'interface.");
+    }
+
+    private void executeWithRetryOnLock(String sql, Long logId, boolean isExtraction) {
+        jdbcTemplate.execute((java.sql.Connection conn) -> {
+            executeStatementWithRetry(conn, sql, logId, isExtraction, "");
+            return null;
+        });
+    }
+
+    private void executeStatementWithRetry(java.sql.Connection conn, String sql, Long logId, boolean isExtraction,
+            String msgPrefix) {
+        String timePrefix = "["
+                + java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")) + "] ";
+        String msg = timePrefix + msgPrefix + "Exécution : "
+                + (sql.length() > 1500 ? sql.substring(0, 1500) + "..." : sql);
+        System.out.println("[DB] " + msg);
+        if (logId != null) {
+            String table = isExtraction ? "CDL_QUERY_EXTRACTION_LOG" : "CDL_QUERY_EXECUTION_LOG";
+            try (java.sql.PreparedStatement ps = conn
+                    .prepareStatement("UPDATE " + table + " SET MESSAGE = ? WHERE ID = ?")) {
+                ps.setString(1, msg);
+                ps.setLong(2, logId);
+                ps.executeUpdate();
+            } catch (Exception ignored) {
+            }
+        }
+
+        int retries = 0;
+        int maxRetries = 60;
+        while (true) {
+            try (java.sql.Statement stmt = conn.createStatement()) {
+                stmt.execute(sql);
+                System.out.println("[DB] Exécution terminée avec succès.");
+                break;
+            } catch (Exception e) {
+                if (e.getMessage() != null && e.getMessage().contains("ORA-00054")) {
+                    retries++;
+                    if (retries >= maxRetries) {
+                        if (logId != null) {
+                            String table = isExtraction ? "CDL_QUERY_EXTRACTION_LOG" : "CDL_QUERY_EXECUTION_LOG";
+                            try (java.sql.PreparedStatement ps = conn
+                                    .prepareStatement("UPDATE " + table + " SET MESSAGE = ? WHERE ID = ?")) {
+                                ps.setString(1, "Erreur Lock ORA-00054 sur " + sql);
+                                ps.setLong(2, logId);
+                                ps.executeUpdate();
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        throw new RuntimeException(
+                                "La ressource est indisponible après " + maxRetries + " secondes. " + e.getMessage(),
+                                e);
+                    }
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException("Annulé pendant l'attente");
+                    }
+                } else {
+                    throw new RuntimeException("Erreur lors de l'exécution SQL: " + e.getMessage(), e);
+                }
+            }
+        }
     }
 }
