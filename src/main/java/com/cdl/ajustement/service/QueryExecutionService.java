@@ -28,6 +28,9 @@ public class QueryExecutionService {
     private QueryExtractionLogRepository extractionLogRepository;
 
     @Autowired
+    private com.cdl.ajustement.repository.ScheduledTaskRepository scheduledTaskRepository;
+
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     private final ConcurrentHashMap<String, String> activeRuns = new ConcurrentHashMap<>();
@@ -35,7 +38,7 @@ public class QueryExecutionService {
     // Track extraction jobs by configName + "_" + index
     private final ConcurrentHashMap<String, CompletableFuture<?>> extractionFutures = new ConcurrentHashMap<>();
 
-    public void executeConfiguredQuery(String configName) {
+    public void executeConfiguredQuery(String configName, String username) {
         logRepository.findAllByOrderByExecutionDateDesc().stream()
                 .filter(l -> l.getConfigName().equals(configName) && "STARTED".equals(l.getStatus()))
                 .findFirst()
@@ -46,8 +49,10 @@ public class QueryExecutionService {
         QueryConfig config = configRepository.findByConfigName(configName)
                 .orElseThrow(() -> new RuntimeException("Configuration not found: " + configName));
 
-        String username = org.springframework.security.core.context.SecurityContextHolder.getContext()
-                .getAuthentication().getName();
+        if (username == null || username.isEmpty()) {
+            username = "system";
+        }
+        
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
         String runId = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").format(now);
         this.activeRuns.put(configName, runId);
@@ -562,6 +567,52 @@ public class QueryExecutionService {
                     throw new RuntimeException("Erreur lors de l'exécution SQL: " + e.getMessage(), e);
                 }
             }
+        }
+    }
+    public void scheduleExecution(String configName, java.time.LocalDateTime time, String username) {
+        com.cdl.ajustement.entity.ScheduledTask task = com.cdl.ajustement.entity.ScheduledTask.builder()
+                .configName(configName)
+                .scheduledTime(time)
+                .scheduledBy(username)
+                .status("PENDING")
+                .build();
+        scheduledTaskRepository.save(task);
+    }
+
+    public com.cdl.ajustement.entity.ScheduledTask getPendingSchedule(String configName) {
+        java.util.List<com.cdl.ajustement.entity.ScheduledTask> tasks = scheduledTaskRepository.findByConfigNameAndStatus(configName, "PENDING");
+        return tasks.isEmpty() ? null : tasks.get(0);
+    }
+
+    public void cancelScheduledExecution(String configName) {
+        java.util.List<com.cdl.ajustement.entity.ScheduledTask> tasks = scheduledTaskRepository.findByConfigNameAndStatus(configName, "PENDING");
+        for (com.cdl.ajustement.entity.ScheduledTask task : tasks) {
+            task.setStatus("CANCELLED");
+            scheduledTaskRepository.save(task);
+        }
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60000)
+    public void processScheduledTasks() {
+        // Must set context to CDL_NEW because scheduled task has no web context
+        String previousDb = com.cdl.ajustement.config.DatabaseContextHolder.getDatabase();
+        com.cdl.ajustement.config.DatabaseContextHolder.setDatabase("CDL_NEW");
+        try {
+            java.util.List<com.cdl.ajustement.entity.ScheduledTask> pendingTasks = scheduledTaskRepository.findByStatusOrderByScheduledTimeAsc("PENDING");
+            java.time.LocalDateTime now = java.time.LocalDateTime.now();
+            for (com.cdl.ajustement.entity.ScheduledTask task : pendingTasks) {
+                if (!task.getScheduledTime().isAfter(now)) {
+                    try {
+                        executeConfiguredQuery(task.getConfigName(), task.getScheduledBy());
+                        task.setStatus("EXECUTED");
+                    } catch (Exception e) {
+                        task.setStatus("FAILED");
+                    }
+                    scheduledTaskRepository.save(task);
+                }
+            }
+        } finally {
+            com.cdl.ajustement.config.DatabaseContextHolder.setDatabase(previousDb);
         }
     }
 }

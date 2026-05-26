@@ -65,6 +65,18 @@ public class DataInitializer {
             jdbcTemplate.execute("ALTER TABLE CDL_APP_USER ADD ASSIGNED_DATABASE VARCHAR2(50) DEFAULT 'CDL_NEW'");
         } catch (Exception e) {}
 
+        // Table des tâches planifiées
+        try {
+            jdbcTemplate.execute("CREATE TABLE CDL_SCHEDULED_TASKS (" +
+                    "ID NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, " +
+                    "CONFIG_NAME VARCHAR2(255), " +
+                    "SCHEDULED_TIME TIMESTAMP, " +
+                    "SCHEDULED_BY VARCHAR2(255), " +
+                    "STATUS VARCHAR2(50))");
+        } catch (Exception e) {
+            // Table existe déjà
+        }
+
         if (!userRepository.findByUsername("admin").isPresent()) {
             AppUser admin = new AppUser();
             admin.setUsername("admin");

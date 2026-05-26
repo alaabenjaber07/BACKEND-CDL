@@ -17,6 +17,22 @@ public class QueryExecutionController {
     @Autowired
     private QueryExecutionService executionService;
 
+    @Autowired
+    private com.cdl.ajustement.repository.UserRepository userRepository;
+
+    @Autowired
+    private org.springframework.security.crypto.password.PasswordEncoder passwordEncoder;
+
+    private boolean verifyUserPassword(String rawPassword) {
+        if (rawPassword == null || rawPassword.isEmpty()) return false;
+        String username = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getName();
+        com.cdl.ajustement.entity.AppUser user = userRepository.findByUsername(username).orElse(null);
+        if (user != null) {
+            return passwordEncoder.matches(rawPassword, user.getPassword());
+        }
+        return false;
+    }
+
     @PostMapping("/reset-default")
     @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN', 'SUPER_ADMIN')")
     public ResponseEntity<Map<String, String>> resetDefaultConfig() {
@@ -65,9 +81,52 @@ public class QueryExecutionController {
     }
 
     @PostMapping("/execute/{configName}")
-    public ResponseEntity<Map<String, String>> executeQuery(@PathVariable String configName) {
-        executionService.executeConfiguredQuery(configName);
+    public ResponseEntity<Map<String, String>> executeQuery(@PathVariable String configName, @RequestBody Map<String, String> body) {
+        if (!verifyUserPassword(body.get("password"))) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(Collections.singletonMap("error", "Mot de passe invalide"));
+        }
+        String username = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getName();
+        executionService.executeConfiguredQuery(configName, username);
         return ResponseEntity.ok(Collections.singletonMap("status", "Execution started"));
+    }
+
+    @PostMapping("/schedule/{configName}")
+    public ResponseEntity<Map<String, String>> scheduleQuery(@PathVariable String configName, @RequestBody Map<String, String> body) {
+        if (!verifyUserPassword(body.get("password"))) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(Collections.singletonMap("error", "Mot de passe invalide"));
+        }
+        
+        // Prevent scheduling if already running or scheduled
+        com.cdl.ajustement.entity.ScheduledTask existing = executionService.getPendingSchedule(configName);
+        if (existing != null) {
+            return ResponseEntity.badRequest().body(Collections.singletonMap("error", "Une exécution est déjà planifiée pour ce traitement."));
+        }
+
+        String scheduleTimeStr = body.get("scheduleTime");
+        if (scheduleTimeStr == null || scheduleTimeStr.isEmpty()) {
+            return ResponseEntity.badRequest().body(Collections.singletonMap("error", "Date de planification manquante"));
+        }
+        java.time.LocalDateTime scheduleTime = java.time.LocalDateTime.parse(scheduleTimeStr, java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+        String username = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getName();
+        
+        executionService.scheduleExecution(configName, scheduleTime, username);
+        return ResponseEntity.ok(Collections.singletonMap("status", "Execution scheduled"));
+    }
+
+    @GetMapping("/schedule-status/{configName}")
+    public ResponseEntity<Map<String, Object>> getScheduleStatus(@PathVariable String configName) {
+        com.cdl.ajustement.entity.ScheduledTask existing = executionService.getPendingSchedule(configName);
+        Map<String, Object> response = new java.util.HashMap<>();
+        if (existing != null) {
+            response.put("isScheduled", true);
+            response.put("scheduledTime", existing.getScheduledTime().toString());
+            response.put("scheduledBy", existing.getScheduledBy());
+        } else {
+            response.put("isScheduled", false);
+        }
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/cancel/{configName}")
@@ -79,13 +138,22 @@ public class QueryExecutionController {
     @PostMapping("/cancel-secure/{configName}")
     public ResponseEntity<Map<String, String>> cancelQuerySecure(@PathVariable String configName,
             @RequestBody Map<String, String> body) {
-        String password = body.get("password");
-        if (!"ADMINCDL".equals(password)) {
+        if (!verifyUserPassword(body.get("password"))) {
             return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
                     .body(Collections.singletonMap("error", "Mot de passe invalide"));
         }
         executionService.cancelExecution(configName);
         return ResponseEntity.ok(Collections.singletonMap("status", "Execution cancelled"));
+    }
+
+    @PostMapping("/cancel-schedule/{configName}")
+    public ResponseEntity<Map<String, String>> cancelSchedule(@PathVariable String configName, @RequestBody Map<String, String> body) {
+        if (!verifyUserPassword(body.get("password"))) {
+            return ResponseEntity.status(org.springframework.http.HttpStatus.UNAUTHORIZED)
+                    .body(Collections.singletonMap("error", "Mot de passe invalide"));
+        }
+        executionService.cancelScheduledExecution(configName);
+        return ResponseEntity.ok(Collections.singletonMap("status", "Schedule cancelled"));
     }
 
     @GetMapping("/progress")
