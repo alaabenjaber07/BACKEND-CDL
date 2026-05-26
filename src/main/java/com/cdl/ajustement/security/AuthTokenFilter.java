@@ -7,6 +7,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
+import com.cdl.ajustement.config.DatabaseContextHolder;
 
 import javax.servlet.FilterChain;
 import javax.servlet.ServletException;
@@ -27,6 +28,10 @@ public class AuthTokenFilter extends OncePerRequestFilter {
         try {
             String jwt = parseJwt(request);
             if (jwt != null && jwtUtils.validateJwtToken(jwt)) {
+                String database = jwtUtils.getDatabaseFromJwtToken(jwt);
+                if (database != null) {
+                    DatabaseContextHolder.setDatabase(database);
+                }
                 String username = jwtUtils.getUserNameFromJwtToken(jwt);
                 UserDetails userDetails = userDetailsService.loadUserByUsername(username);
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
@@ -35,7 +40,11 @@ public class AuthTokenFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
         } catch (Exception e) {}
-        filterChain.doFilter(request, response);
+        try {
+            filterChain.doFilter(request, response);
+        } finally {
+            DatabaseContextHolder.clear();
+        }
     }
 
     private String parseJwt(HttpServletRequest request) {

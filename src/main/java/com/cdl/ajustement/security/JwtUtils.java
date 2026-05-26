@@ -6,6 +6,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.stereotype.Component;
 
+import com.cdl.ajustement.config.DatabaseContextHolder;
 import java.security.Key;
 import java.util.Date;
 
@@ -24,10 +25,15 @@ public class JwtUtils {
         User userPrincipal = (User) authentication.getPrincipal();
         return Jwts.builder()
                 .setSubject((userPrincipal.getUsername()))
+                .claim("database", DatabaseContextHolder.getDatabase())
                 .setIssuedAt(new Date())
                 .setExpiration(new Date((new Date()).getTime() + jwtExpirationMs))
                 .signWith(getSigningKey(), SignatureAlgorithm.HS512)
                 .compact();
+    }
+
+    public String getDatabaseFromJwtToken(String token) {
+        return Jwts.parserBuilder().setSigningKey(getSigningKey()).build().parseClaimsJws(token).getBody().get("database", String.class);
     }
 
     public String getUserNameFromJwtToken(String token) {

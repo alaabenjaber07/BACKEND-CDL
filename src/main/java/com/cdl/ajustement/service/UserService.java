@@ -46,6 +46,7 @@ public class UserService {
         user.setEmail(userDetails.getEmail());
         user.setMatricule(userDetails.getMatricule());
         user.setRole(userDetails.getRole());
+        user.setAssignedDatabase(userDetails.getAssignedDatabase() != null ? userDetails.getAssignedDatabase() : "CDL_NEW");
 
         // On ne met à jour le mdp que s'il est fourni
         if (userDetails.getPassword() != null && !userDetails.getPassword().isEmpty()) {

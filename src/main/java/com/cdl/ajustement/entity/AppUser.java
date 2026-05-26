@@ -28,4 +28,7 @@ public class AppUser {
     private String prenom;
     private String email;
     private String matricule;
+
+    @Column(name = "ASSIGNED_DATABASE")
+    private String assignedDatabase = "CDL_NEW"; // CDL ou CDL_NEW — assigné par l'admin
 }
