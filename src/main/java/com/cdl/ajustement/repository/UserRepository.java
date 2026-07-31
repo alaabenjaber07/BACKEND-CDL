@@ -11,4 +11,6 @@ public interface UserRepository extends JpaRepository<AppUser, Long> {
     Optional<AppUser> findByUsername(String username);
 
     Optional<AppUser> findByUsernameOrMatricule(String username, String matricule);
+    
+    Optional<AppUser> findByMatricule(String matricule);
 }

@@ -32,14 +32,26 @@ public class AuthTokenFilter extends OncePerRequestFilter {
                 if (database != null) {
                     DatabaseContextHolder.setDatabase(database);
                 }
+
                 String username = jwtUtils.getUserNameFromJwtToken(jwt);
-                UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+                String role = jwtUtils.getRoleFromJwtToken(jwt);
+                if (role == null) role = "ROLE_USER"; // fallback si ancien token
+
+                UserDetails userDetails = new org.springframework.security.core.userdetails.User(
+                    username, "", java.util.Collections.singletonList(
+                        new org.springframework.security.core.authority.SimpleGrantedAuthority(role)
+                    )
+                );
+
                 UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
                         userDetails, null, userDetails.getAuthorities());
                 authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            System.err.println("Cannot set user authentication: " + e.getMessage());
+            e.printStackTrace();
+        }
         try {
             filterChain.doFilter(request, response);
         } finally {

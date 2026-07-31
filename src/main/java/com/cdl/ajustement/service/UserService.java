@@ -47,6 +47,10 @@ public class UserService {
         user.setMatricule(userDetails.getMatricule());
         user.setRole(userDetails.getRole());
         user.setAssignedDatabase(userDetails.getAssignedDatabase() != null ? userDetails.getAssignedDatabase() : "CDL_NEW");
+        // Update allowed tabs if provided
+        if (userDetails.getAllowedTabs() != null) {
+            user.setAllowedTabs(userDetails.getAllowedTabs());
+        }
 
         // On ne met à jour le mdp que s'il est fourni
         if (userDetails.getPassword() != null && !userDetails.getPassword().isEmpty()) {

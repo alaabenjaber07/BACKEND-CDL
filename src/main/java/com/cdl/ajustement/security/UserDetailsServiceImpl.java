@@ -25,7 +25,8 @@ public class UserDetailsServiceImpl implements UserDetailsService {
         AppUser user = userRepository.findByUsernameOrMatricule(identifier, identifier)
                 .orElseThrow(() -> new UsernameNotFoundException("Utilisateur non trouvé avec: " + identifier));
 
+        String role = user.getRole() != null ? user.getRole().toUpperCase().trim() : "USER";
         return new User(user.getUsername(), user.getPassword(),
-                Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + user.getRole())));
+                Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)));
     }
 }

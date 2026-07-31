@@ -23,9 +23,12 @@ public class JwtUtils {
 
     public String generateJwtToken(Authentication authentication) {
         User userPrincipal = (User) authentication.getPrincipal();
+        String role = userPrincipal.getAuthorities().stream().findFirst()
+            .map(org.springframework.security.core.GrantedAuthority::getAuthority).orElse("ROLE_USER");
         return Jwts.builder()
                 .setSubject((userPrincipal.getUsername()))
                 .claim("database", DatabaseContextHolder.getDatabase())
+                .claim("role", role)
                 .setIssuedAt(new Date())
                 .setExpiration(new Date((new Date()).getTime() + jwtExpirationMs))
                 .signWith(getSigningKey(), SignatureAlgorithm.HS512)
@@ -34,6 +37,10 @@ public class JwtUtils {
 
     public String getDatabaseFromJwtToken(String token) {
         return Jwts.parserBuilder().setSigningKey(getSigningKey()).build().parseClaimsJws(token).getBody().get("database", String.class);
+    }
+
+    public String getRoleFromJwtToken(String token) {
+        return Jwts.parserBuilder().setSigningKey(getSigningKey()).build().parseClaimsJws(token).getBody().get("role", String.class);
     }
 
     public String getUserNameFromJwtToken(String token) {

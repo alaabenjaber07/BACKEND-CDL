@@ -64,6 +64,9 @@ public class DataInitializer {
         try {
             jdbcTemplate.execute("ALTER TABLE CDL_APP_USER ADD ASSIGNED_DATABASE VARCHAR2(50) DEFAULT 'CDL_NEW'");
         } catch (Exception e) {}
+        try {
+            jdbcTemplate.execute("ALTER TABLE CDL_APP_USER ADD ALLOWED_TABS VARCHAR2(255)");
+        } catch (Exception e) {}
 
         // Table des tâches planifiées
         try {
